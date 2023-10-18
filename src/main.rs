@@ -200,7 +200,7 @@ impl Transcoder {
         encoder.set_aspect_ratio(decoder.aspect_ratio());
         encoder.set_format(decoder.format());
         encoder.set_frame_rate(decoder.frame_rate());
-        encoder.set_time_base(decoder.frame_rate().unwrap().invert());
+        encoder.set_time_base(Rational(1, 30));
         if global_header {
             encoder.set_flags(codec::Flags::GLOBAL_HEADER);
         }
@@ -379,7 +379,7 @@ fn main() {
         ost_time_bases[ost_index] = octx.stream(ost_index as _).unwrap().time_base();
     }
 
-    for (stream, mut packet) in ictx.packets().filter_map(Result::ok) {
+    for (stream, mut packet) in ictx.packets() {
         let ist_index = stream.index();
         let ost_index = stream_mapping[ist_index];
         if ost_index < 0 {
