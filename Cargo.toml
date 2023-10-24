@@ -6,6 +6,4 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rsmpeg = "0.14.1"
-anyhow = "1.0.57"
-cstr = "0.2.11"
+ffmpeg-the-third = { version = "1.2.2+ffmpeg-6.0" }
