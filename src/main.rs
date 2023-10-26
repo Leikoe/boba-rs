@@ -17,12 +17,12 @@
 
 extern crate ffmpeg_the_third as ffmpeg;
 
+use std::{env, ptr};
 use std::collections::HashMap;
-use std::env;
 use std::time::Instant;
 
 use ffmpeg::{codec, decoder, Dictionary, encoder, format, frame, log, media, Packet, picture, Rational};
-use ffmpeg::sys::avcodec_alloc_context3;
+use ffmpeg::sys::{av_guess_frame_rate, avcodec_alloc_context3};
 
 const DEFAULT_X264_OPTS: &str = "preset=medium";
 
@@ -48,12 +48,16 @@ impl Transcoder {
                 println!("Transcoder::new() - start");
                 let global_header = octx.format().flags().contains(format::Flags::GLOBAL_HEADER);
 
-                let decoder_codec = ffmpeg::codec::context::Context::from_parameters(ist.parameters())?;
-                let decoder = decoder_codec
+                let mut decoder_codec_context = ffmpeg::codec::context::Context::from_parameters(ist.parameters())?;
+                let framerate = unsafe {
+                        (*decoder_codec_context.as_mut_ptr()).framerate = av_guess_frame_rate(octx.as_mut_ptr(), ist.as_ptr().cast_mut(), ptr::null_mut());
+                        Rational::from((*decoder_codec_context.as_mut_ptr()).framerate)
+                };
+                let decoder = decoder_codec_context
                     .decoder()
                     .video()?;
 
-                let mut ost = octx.add_stream(None)?;
+                let mut ost = octx.add_stream(None)?; // codec param is unused by ffmpeg
                 let encoder_codec = encoder::find(codec::Id::H264).expect("couldn't find H265 codec");
                 let encoder_codec_context = unsafe {
                         codec::context::Context::wrap(avcodec_alloc_context3(encoder_codec.as_ptr()), None)
@@ -66,8 +70,11 @@ impl Transcoder {
                 encoder.set_width(decoder.width());
                 encoder.set_aspect_ratio(decoder.aspect_ratio());
                 encoder.set_format(decoder.format());
-                encoder.set_time_base(ist.time_base());
-                ost.set_time_base(ist.time_base());
+                encoder.set_time_base(dbg!(framerate.invert()));
+                dbg!(decoder.frame_rate(), decoder.time_base());
+                // ost.set_time_base(framerate.invert());
+                // ost.set_avg_frame_rate(framerate);
+                // encoder.set_frame_rate(Some(framerate));
 
                 if global_header {
                         encoder.set_flags(codec::Flags::GLOBAL_HEADER);
@@ -96,7 +103,7 @@ impl Transcoder {
         }
 
         fn send_packet_to_decoder(&mut self, packet: &Packet) {
-                self.decoder.send_packet(packet).unwrap();
+                self.decoder.send_packet(packet).expect("Decoding failed");
         }
 
         fn send_eof_to_decoder(&mut self) {
@@ -111,11 +118,11 @@ impl Transcoder {
                 let mut frame = frame::Video::empty();
                 while self.decoder.receive_frame(&mut frame).is_ok() {
                         self.frame_count += 1;
-                        let timestamp = frame.timestamp();
+                        let timestamp = frame.timestamp().unwrap_or(self.frame_count as i64);
                         self.log_progress(f64::from(
-                                Rational(timestamp.unwrap_or(0) as i32, 1) * self.decoder.time_base(),
+                                Rational(timestamp as i32, 1) * self.decoder.time_base()
                         ));
-                        frame.set_pts(timestamp);
+                        frame.set_pts(Some(timestamp));
                         frame.set_kind(picture::Type::None);
                         self.send_frame_to_encoder(&frame);
                         self.receive_and_process_encoded_packets(octx, ost_time_base);
@@ -135,11 +142,11 @@ impl Transcoder {
                 octx: &mut format::context::Output,
                 ost_time_base: Rational,
         ) {
-                let mut encoded = Packet::empty();
-                while self.encoder.receive_packet(&mut encoded).is_ok() {
-                        encoded.set_stream(self.ost_index);
-                        encoded.rescale_ts(self.decoder.time_base(), ost_time_base);
-                        encoded.write_interleaved(octx).unwrap();
+                let mut p = Packet::empty();
+                while self.encoder.receive_packet(&mut p).is_ok() {
+                        p.set_stream(self.ost_index);
+                        p.rescale_ts(self.decoder.time_base(), ost_time_base);
+                        p.write_interleaved(octx).unwrap_or_else(|e| eprintln!("COULDN'T WRITE FRAME (err: {})", e));
                 }
         }
 
@@ -151,7 +158,7 @@ impl Transcoder {
                         return;
                 }
                 eprintln!(
-                        "time elpased: \t{:8.2}\tframe count: {:8}\ttimestamp: {:8.2}",
+                        "time elpased: \t{:8.2}\tframe count: {:8}\ttimestamp: {:8.20}",
                         self.starting_time.elapsed().as_secs_f64(),
                         self.frame_count,
                         timestamp
@@ -203,11 +210,11 @@ fn main() {
         let mut ost_time_bases = vec![Rational(0, 0); ictx.nb_streams() as _];
         let mut transcoders = HashMap::new();
         let mut ost_index = 0;
-        for (ist_index, ist) in ictx.streams().enumerate() {
+        for (ist_index, mut ist) in ictx.streams().enumerate() {
                 let ist_medium = ist.parameters().medium();
                 if ist_medium != media::Type::Video
-                   // && ist_medium != media::Type::Audio
-                   // && ist_medium != media::Type::Subtitle
+                // && ist_medium != media::Type::Audio
+                // && ist_medium != media::Type::Subtitle
                 {
                         stream_mapping[ist_index] = -1;
                         continue;
@@ -251,6 +258,7 @@ fn main() {
 
         for (stream, mut packet) in ictx.packets() {
                 let ist_index = stream.index();
+                // println!("Demuxer gave frame of stream_index {ist_index}");
                 let ost_index = stream_mapping[ist_index];
                 if ost_index < 0 {
                         continue;
@@ -258,6 +266,7 @@ fn main() {
                 let ost_time_base = ost_time_bases[ost_index as usize];
                 match transcoders.get_mut(&ist_index) {
                         Some(transcoder) => {
+                                // println!("Going to reencode&filter the frame");
                                 packet.rescale_ts(stream.time_base(), transcoder.decoder.time_base());
                                 transcoder.send_packet_to_decoder(&packet);
                                 transcoder.receive_and_process_decoded_frames(&mut octx, ost_time_base);
