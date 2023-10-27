@@ -15,6 +15,9 @@
 //   transcode-x264 input.flv output.mp4
 //   transcode-x264 input.mkv output.mkv 'preset=veryslow,crf=18'
 
+#[allow(dead_code)]
+mod coding;
+
 extern crate ffmpeg_the_third as ffmpeg;
 
 use std::{env, ptr};
