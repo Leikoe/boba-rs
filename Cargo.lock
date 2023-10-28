@@ -161,9 +161,9 @@ dependencies = [
 
 [[package]]
 name = "ggml-sys-bleedingedge"
-version = "2310280042.0.0+llamacpp-release.b1433"
+version = "2308180041.0.0+llamacpp-release.master-604b8bd"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62ca39f7a57c01e693eb1ad43cf248e1e94a6a2861d2fef1207f6f302ed4a59b"
+checksum = "7afb28cc2fd9b0e8f77ccf571666aad999d2d9a7d2996efb9a0d5c928db50ac4"
 dependencies = [
  "bindgen 0.66.1",
  "cc",

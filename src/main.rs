@@ -15,6 +15,8 @@
 //   transcode-x264 input.flv output.mp4
 //   transcode-x264 input.mkv output.mkv 'preset=veryslow,crf=18'
 
+mod rife;
+
 extern crate ffmpeg_the_third as ffmpeg;
 
 use std::{env, ptr};
@@ -182,6 +184,8 @@ fn parse_opts<'a>(s: String) -> Option<Dictionary<'a>> {
 
 
 fn main() {
+        rife::main().expect("rife failed");
+
         let input_file = env::args().nth(1).expect("missing input file");
         let output_file = env::args().nth(2).expect("missing output file");
         let x264_opts = parse_opts(
@@ -210,7 +214,7 @@ fn main() {
         let mut ost_time_bases = vec![Rational(0, 0); ictx.nb_streams() as _];
         let mut transcoders = HashMap::new();
         let mut ost_index = 0;
-        for (ist_index, mut ist) in ictx.streams().enumerate() {
+        for (ist_index, ist) in ictx.streams().enumerate() {
                 let ist_medium = ist.parameters().medium();
                 if ist_medium != media::Type::Video
                 // && ist_medium != media::Type::Audio
