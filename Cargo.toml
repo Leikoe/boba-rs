@@ -7,3 +7,4 @@ edition = "2021"
 
 [dependencies]
 ffmpeg-the-third = { version = "1.2.2+ffmpeg-6.0" }
+ggml-sys-bleedingedge = "2310280042.0.0"
