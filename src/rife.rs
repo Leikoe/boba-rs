@@ -7,13 +7,7 @@ use std::slice::{from_raw_parts, from_raw_parts_mut};
 use std::{env, ptr};
 
 use anyhow::{bail, Result};
-use ggml_sys_bleedingedge::{
-    ggml_add, ggml_build_forward_expand, ggml_cont, ggml_context, ggml_conv_2d, ggml_get_tensor,
-    ggml_graph_compute_with_ctx, ggml_graph_export, ggml_init, ggml_init_params, ggml_mul_mat,
-    ggml_new_graph, ggml_new_tensor_4d, ggml_op_pool_GGML_OP_POOL_MAX, ggml_permute, ggml_pool_2d,
-    ggml_relu, ggml_reshape_2d, ggml_set_name, ggml_soft_max, ggml_tensor, ggml_type_GGML_TYPE_F32,
-    gguf_context, gguf_init_from_file, gguf_init_params,
-};
+use ggml::*;
 
 macro_rules! time {
         ($a:ident($($b:tt)*))=>{
@@ -199,7 +193,7 @@ pub fn main() -> Result<()> {
         eprintln!();
     }
 
-    let prediction = unsafe { mnist_eval(&model, 1, &digit, None)? };
+    let prediction = unsafe { time!(mnist_eval(&model, 1, &digit, None))? };
     println!("predicted digit is {}", prediction);
 
     Ok(())
