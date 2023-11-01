@@ -23,6 +23,41 @@ macro_rules! time {
         };
 }
 
+unsafe fn print_system_info() {
+    println!(
+        "AVX = {} | \
+    AVX2 = {} | \
+    AVX512 = {} | \
+    AVX512_VBMI = {} | \
+    AVX512_VNNI = {} | \
+    FMA = {} | \
+    NEON = {} | \
+    ARM_FMA = {} | \
+    F16C = {} | \
+    FP16_VA = {} | \
+    WASM_SIMD = {} | \
+    BLAS = {} | \
+    SSE3 = {} | \
+    SSSE3 = {} | \
+    VSX = {} |",
+        ggml_cpu_has_avx(),
+        ggml_cpu_has_avx2(),
+        ggml_cpu_has_avx512(),
+        ggml_cpu_has_avx512_vbmi(),
+        ggml_cpu_has_avx512_vnni(),
+        ggml_cpu_has_fma(),
+        ggml_cpu_has_neon(),
+        ggml_cpu_has_arm_fma(),
+        ggml_cpu_has_f16c(),
+        ggml_cpu_has_fp16_va(),
+        ggml_cpu_has_wasm_simd(),
+        ggml_cpu_has_blas(),
+        ggml_cpu_has_sse3(),
+        ggml_cpu_has_ssse3(),
+        ggml_cpu_has_vsx()
+    )
+}
+
 struct MnistModel {
     pub conv2d_1_kernel: *const ggml_tensor,
     pub conv2d_1_bias: *const ggml_tensor,
@@ -147,6 +182,7 @@ unsafe fn mnist_eval(
         .map(|(index, _)| index)
         .unwrap();
 
+    ggml_free(ctx0);
     Ok(prediction as i32)
 }
 
@@ -162,6 +198,8 @@ pub fn main() -> Result<()> {
             ));
         }
     };
+
+    unsafe { print_system_info() };
 
     // load the model
     let model = unsafe { time!(mnist_model_load(model_file))? };
@@ -196,5 +234,6 @@ pub fn main() -> Result<()> {
     let prediction = unsafe { time!(mnist_eval(&model, 1, &digit, None))? };
     println!("predicted digit is {}", prediction);
 
+    unsafe { ggml_free(model.ctx.cast_mut()) };
     Ok(())
 }
