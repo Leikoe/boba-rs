@@ -175,7 +175,7 @@ unsafe fn mnist_eval(
     }
 
     // argmax of probs.data
-    let prediction = from_raw_parts::<f32>((*cur).data as *const f32, 10)
+    let prediction = from_raw_parts::<f32>(ggml_get_data_f32(cur), 10)
         .iter()
         .enumerate()
         .max_by(|(_, &a), (_, b)| a.total_cmp(b))
