@@ -1,71 +1,206 @@
 extern crate ggml_sys_bleedingedge as ggml;
-use ggml::*;
 
-#[derive(Debug)]
-pub struct Error(String);
+use std::ffi::{c_int, CString};
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::slice::{from_raw_parts, from_raw_parts_mut};
+use std::{env, ptr};
 
+use anyhow::{bail, Result};
+use ggml_sys_bleedingedge::{
+    ggml_add, ggml_build_forward_expand, ggml_cont, ggml_context, ggml_conv_2d, ggml_get_tensor,
+    ggml_graph_compute_with_ctx, ggml_graph_export, ggml_init, ggml_init_params, ggml_mul_mat,
+    ggml_new_graph, ggml_new_tensor_4d, ggml_op_pool_GGML_OP_POOL_MAX, ggml_permute, ggml_pool_2d,
+    ggml_relu, ggml_reshape_2d, ggml_set_name, ggml_soft_max, ggml_tensor, ggml_type_GGML_TYPE_F32,
+    gguf_context, gguf_init_from_file, gguf_init_params,
+};
 
-pub fn main() -> Result<(), Error> {
-    //srand(time(NULL));
-    GGMLSYS_VERSION;
+macro_rules! time {
+        ($a:ident($($b:tt)*))=>{
+            {
+                    use std::time::Instant;
 
-    // if (argc != 3) {
-    //     fprintf(stderr, "Usage: %s models/mnist/ggml-model-f32.bin models/mnist/t10k-images.idx3-ubyte\n", argv[0]);
-    //     exit(0);
-    // }
-    //
-    // uint8_t buf[784];
-    // mnist_model model;
-    // std::vector<float> digit;
-    //
-    // // load the model
-    // {
-    //     const int64_t t_start_us = ggml_time_us();
-    //
-    //     if (!mnist_model_load(argv[1], model)) {
-    //         fprintf(stderr, "%s: failed to load model from '%s'\n", __func__, "models/ggml-model-f32.bin");
-    //         return 1;
-    //     }
-    //
-    //     const int64_t t_load_us = ggml_time_us() - t_start_us;
-    //
-    //     fprintf(stdout, "%s: loaded model in %8.2f ms\n", __func__, t_load_us / 1000.0f);
-    // }
-    //
-    // // read a random digit from the test set
-    // {
-    //     std::ifstream fin(argv[2], std::ios::binary);
-    //     if (!fin) {
-    //         fprintf(stderr, "%s: failed to open '%s'\n", __func__, argv[2]);
-    //         return 1;
-    //     }
-    //
-    //     // seek to a random digit: 16-byte header + 28*28 * (random 0 - 10000)
-    //     fin.seekg(16 + 784 * (rand() % 10000));
-    //     fin.read((char *) &buf, sizeof(buf));
-    // }
-    //
-    // // render the digit in ASCII
-    // {
-    //     digit.resize(sizeof(buf));
-    //
-    //     for (int row = 0; row < 28; row++) {
-    //         for (int col = 0; col < 28; col++) {
-    //             fprintf(stderr, "%c ", (float)buf[row*28 + col] > 230 ? '*' : '_');
-    //             digit[row*28 + col] = ((float)buf[row*28 + col]);
-    //         }
-    //
-    //         fprintf(stderr, "\n");
-    //     }
-    //
-    //     fprintf(stderr, "\n");
-    // }
-    //
-    // const int prediction = mnist_eval(model, 1, digit, "mnist.ggml");
-    //
-    // fprintf(stdout, "%s: predicted digit is %d\n", __func__, prediction);
-    //
-    // ggml_free(model.ctx);
+                    let start = Instant::now();
+                    let result = $a($($b)*);
+                    let end = start.elapsed();
+                    eprintln!("[{}:{}] {} took {:?}", file!(), line!(), stringify!($a($($b)*)), end);
+                    result
+            }
+        };
+}
+
+struct MnistModel {
+    pub conv2d_1_kernel: *const ggml_tensor,
+    pub conv2d_1_bias: *const ggml_tensor,
+    pub conv2d_2_kernel: *const ggml_tensor,
+    pub conv2d_2_bias: *const ggml_tensor,
+    pub dense_weight: *const ggml_tensor,
+    pub dense_bias: *const ggml_tensor,
+    pub ctx: *const ggml_context,
+}
+
+unsafe fn mnist_model_load(model_path: String) -> Result<MnistModel> {
+    let mut model_ctx: *mut ggml_context = ptr::null_mut();
+    let params = gguf_init_params {
+        no_alloc: false,
+        ctx: &mut model_ctx,
+    };
+
+    let _ctx: *const gguf_context = gguf_init_from_file(CString::new(model_path)?.as_ptr(), params);
+    if model_ctx.is_null() {
+        bail!("gguf_init_from_file() failed");
+    }
+
+    Ok(MnistModel {
+        conv2d_1_kernel: ggml_get_tensor(model_ctx, CString::new("kernel1")?.as_ptr()),
+        conv2d_1_bias: ggml_get_tensor(model_ctx, CString::new("bias1")?.as_ptr()),
+        conv2d_2_kernel: ggml_get_tensor(model_ctx, CString::new("kernel2")?.as_ptr()),
+        conv2d_2_bias: ggml_get_tensor(model_ctx, CString::new("bias2")?.as_ptr()),
+        dense_weight: ggml_get_tensor(model_ctx, CString::new("dense_w")?.as_ptr()),
+        dense_bias: ggml_get_tensor(model_ctx, CString::new("dense_b")?.as_ptr()),
+        ctx: model_ctx,
+    })
+}
+
+unsafe fn mnist_eval(
+    model: &MnistModel,
+    n_threads: usize,
+    digit: &[f32],
+    fname_cgraph: Option<&str>,
+) -> Result<i32> {
+    let buf_size = 100000 * std::mem::size_of::<f32>() * 4;
+    let mut buf = Vec::with_capacity(buf_size);
+
+    let params = ggml_init_params {
+        mem_size: buf_size,
+        mem_buffer: buf.as_mut_ptr(),
+        no_alloc: false,
+    };
+
+    let ctx0 = ggml_init(params);
+    let gf = ggml_new_graph(ctx0);
+
+    let mut input = ggml_new_tensor_4d(ctx0, ggml_type_GGML_TYPE_F32, 28, 28, 1, 1);
+    let mut input_data = from_raw_parts_mut(((*input).data) as *mut f32, 28 * 28);
+    input_data.copy_from_slice(digit);
+    ggml_set_name(input, CString::new("input")?.as_ptr());
+
+    let mut cur = ggml_conv_2d(
+        ctx0,
+        model.conv2d_1_kernel.cast_mut(),
+        input,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+    );
+    cur = ggml_add(ctx0, cur, model.conv2d_1_bias.cast_mut());
+    cur = ggml_relu(ctx0, cur);
+    // Output shape after Conv2D: (26 26 32 1)
+    cur = ggml_pool_2d(ctx0, cur, ggml_op_pool_GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
+    // Output shape after MaxPooling2D: (13 13 32 1)
+    cur = ggml_conv_2d(
+        ctx0,
+        model.conv2d_2_kernel.cast_mut(),
+        cur,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+    );
+    cur = ggml_add(ctx0, cur, model.conv2d_2_bias.cast_mut());
+    cur = ggml_relu(ctx0, cur);
+
+    // Output shape after Conv2D: (11 11 64 1)
+    cur = ggml_pool_2d(ctx0, cur, ggml_op_pool_GGML_OP_POOL_MAX, 2, 2, 2, 2, 0, 0);
+    // Output shape after MaxPooling2D: (5 5 64 1)
+    cur = ggml_cont(ctx0, ggml_permute(ctx0, cur, 1, 2, 0, 3));
+    // Output shape after permute: (64 5 5 1)
+    cur = ggml_reshape_2d(ctx0, cur, 1600, 1);
+    // Final Dense layer
+    cur = ggml_add(
+        ctx0,
+        ggml_mul_mat(ctx0, model.dense_weight.cast_mut(), cur),
+        model.dense_bias.cast_mut(),
+    );
+
+    let probs = ggml_soft_max(ctx0, cur);
+    ggml_set_name(probs, CString::new("probs")?.as_ptr());
+
+    ggml_build_forward_expand(gf, probs);
+    ggml_graph_compute_with_ctx(ctx0, gf, n_threads as c_int);
+
+    //ggml_graph_print(gf);
+    //ggml_graph_dump_dot(gf, ptr::null(), CString::new("mnist-cnn.dot")?.as_ptr());
+
+    if let Some(fname_cgraph) = fname_cgraph {
+        // export the compute graph for later use
+        // see the "mnist-cpu" example
+        ggml_graph_export(gf, CString::new(fname_cgraph)?.as_ptr());
+
+        println!("exported compute graph to '{}'", fname_cgraph);
+    }
+
+    // argmax of probs.data
+    let prediction = from_raw_parts::<f32>((*cur).data as *const f32, 10)
+        .iter()
+        .enumerate()
+        .max_by(|(_, &a), (_, b)| a.total_cmp(b))
+        .map(|(index, _)| index)
+        .unwrap();
+
+    Ok(prediction as i32)
+}
+
+pub fn main() -> Result<()> {
+    let (model_file, test_set_file) = match (env::args().nth(1), env::args().nth(2)) {
+        (Some(mf), Some(tsf)) => (mf, tsf),
+        _ => {
+            bail!(format!(
+                "Usage: {} models/mnist/mnist-cnn-model.gguf models/mnist/t10k-images.idx3-ubyte",
+                env::args()
+                    .next()
+                    .expect("executable name should be defined")
+            ));
+        }
+    };
+
+    // load the model
+    let model = unsafe { time!(mnist_model_load(model_file))? };
+
+    // read a random digit from the test set
+    let mut buf: [u8; 784] = [0; 784];
+    let mut digit: [f32; 784] = [0f32; 784];
+    {
+        let mut fin = File::open(test_set_file)?;
+
+        // seek to a random digit: 16-byte header + 28*28 * (random 0 - 10000)
+        fin.seek(SeekFrom::Start(
+            (16 + 784 * (rand::random::<usize>() % 10000)) as u64,
+        ))?;
+        fin.read_exact(&mut buf)?;
+    }
+
+    // render the digit in ASCII
+    {
+        for row in 0..28 {
+            for col in 0..28 {
+                eprint!("{} ", if buf[row * 28 + col] > 230 { '*' } else { '_' });
+                digit[row * 28 + col] = buf[row * 28 + col] as f32;
+            }
+
+            eprintln!();
+        }
+
+        eprintln!();
+    }
+
+    let prediction = unsafe { mnist_eval(&model, 1, &digit, None)? };
+    println!("predicted digit is {}", prediction);
 
     Ok(())
 }

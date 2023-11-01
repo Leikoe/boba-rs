@@ -185,6 +185,7 @@ fn parse_opts<'a>(s: String) -> Option<Dictionary<'a>> {
 
 fn main() {
         rife::main().expect("rife failed");
+        return;
 
         let input_file = env::args().nth(1).expect("missing input file");
         let output_file = env::args().nth(2).expect("missing output file");
